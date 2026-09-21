@@ -1,10 +1,13 @@
+import base64
+import binascii
 import logging
+from urllib.parse import unquote_plus
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
 from django.http import HttpRequest, HttpResponseForbidden, HttpResponseNotFound
 
-from ..exceptions import FatalClientError
+from ..exceptions import FatalClientError, InvalidResourceError, OAuthToolkitError
 from ..scopes import get_scopes_backend
 from ..settings import oauth2_settings
 
@@ -95,7 +98,70 @@ class OAuthLibMixin:
         :param request: The current django.http.HttpRequest object
         """
         core = self.get_oauthlib_core()
-        return core.validate_authorization_request(request)
+        scopes, credentials = core.validate_authorization_request(request)
+
+        # RFC 8707: validate the `resource` parameters against the Application's
+        # `allowed_resources` and carry them over to the authorization response.
+        resources = self.get_resource_parameters(request)
+        if resources:
+            self.validate_resource_parameters(
+                resources,
+                client_id=credentials.get("client_id"),
+                redirect_uri=credentials.get("redirect_uri"),
+            )
+            credentials["resource"] = resources
+
+        return scopes, credentials
+
+    def get_resource_parameters(self, request):
+        """
+        Extract the RFC 8707 `resource` parameters from the current request.
+
+        Multiple `resource` parameters are supported, both in the query string
+        (authorization endpoint) and in the POST body (token endpoint).
+
+        :param request: The current django.http.HttpRequest object
+        :return: A list of resource indicator URIs, possibly empty
+        """
+        if request.method == "GET":
+            return [resource for resource in request.GET.getlist("resource") if resource]
+        return [resource for resource in request.POST.getlist("resource") if resource]
+
+    def get_client_id(self, request):
+        """
+        Return the client_id of the current token request, either from the
+        `client_id` POST parameter or from the HTTP Basic authentication header.
+
+        :param request: The current django.http.HttpRequest object
+        """
+        client_id = request.POST.get("client_id")
+        if client_id:
+            return client_id
+
+        auth = request.META.get("HTTP_AUTHORIZATION", "")
+        if auth.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8")
+                client_id, _ = decoded.split(":", 1)
+                return unquote_plus(client_id)
+            except (binascii.Error, UnicodeDecodeError, ValueError):
+                return None
+        return None
+
+    def validate_resource_parameters(self, resources, client_id, redirect_uri=None):
+        """
+        Validate RFC 8707 `resource` parameters against the `allowed_resources`
+        registered on the Application, raising an `invalid_target` error when
+        any of them is not allowed.
+
+        :param resources: A list of resource indicator URIs
+        :param client_id: The client_id of the Application making the request
+        :param redirect_uri: The redirect_uri to send the error response to, if any
+        """
+        core = self.get_oauthlib_core()
+        validator = core.server.request_validator
+        if not validator.validate_resource(client_id, resources):
+            raise OAuthToolkitError(error=InvalidResourceError(), redirect_uri=redirect_uri)
 
     def create_authorization_response(self, request, scopes, credentials, allow):
         """
@@ -110,6 +176,19 @@ class OAuthLibMixin:
         """
         # TODO: move this scopes conversion from and to string into a utils function
         scopes = scopes.split(" ") if scopes else []
+
+        # RFC 8707: make sure the `resource` parameters are validated and passed
+        # along so that they can be persisted on the authorization code grant.
+        resources = credentials.get("resource") or self.get_resource_parameters(request)
+        if resources:
+            if isinstance(resources, str):
+                resources = resources.split()
+            self.validate_resource_parameters(
+                resources,
+                client_id=credentials.get("client_id"),
+                redirect_uri=credentials.get("redirect_uri"),
+            )
+            credentials["resource"] = resources
 
         core = self.get_oauthlib_core()
         return core.create_authorization_response(request, scopes, credentials, allow)
@@ -130,6 +209,24 @@ class OAuthLibMixin:
         :param request: The current django.http.HttpRequest object
         """
         core = self.get_oauthlib_core()
+
+        # RFC 8707: validate the `resource` parameters against the Application's
+        # `allowed_resources`; they are then passed to OAuthLib within the
+        # request body and persisted on the issued access token.
+        resources = self.get_resource_parameters(request)
+        if resources:
+            client_id = self.get_client_id(request)
+            if client_id is not None:
+                validator = core.server.request_validator
+                if not validator.validate_resource(client_id, resources):
+                    error = InvalidResourceError()
+                    return None, error.headers, error.json, error.status_code
+            if len(resources) > 1:
+                # OAuthLib collapses repeated body parameters, so forward the
+                # resource indicators as a single space-separated parameter.
+                request.POST = request.POST.copy()
+                request.POST.setlist("resource", [" ".join(resources)])
+
         return core.create_token_response(request)
 
     def create_revocation_response(self, request):

@@ -1,3 +1,18 @@
+from oauthlib.oauth2.rfc6749.errors import OAuth2Error
+
+
+class InvalidResourceError(OAuth2Error):
+    """
+    RFC 8707 `invalid_target` error.
+
+    Raised when a requested `resource` parameter is invalid, unknown,
+    malformed, or not registered in the Application's `allowed_resources`.
+    """
+
+    error = "invalid_target"
+    description = "The requested resource is invalid, unknown, or not allowed for this client."
+
+
 class OAuthToolkitError(Exception):
     """
     Base class for exceptions

@@ -36,6 +36,8 @@ This directory contains plain-text standards documents used by this repository.
   - Source: https://www.rfc-editor.org/rfc/rfc7662.txt
 - `rfc8252.txt` - OAuth 2.0 for Native Apps
   - Source: https://www.rfc-editor.org/rfc/rfc8252.txt
+- `rfc8707.txt` - Resource Indicators for OAuth 2.0
+  - Source: https://www.rfc-editor.org/rfc/rfc8707.txt
 - `rfc8414.txt` - OAuth 2.0 Authorization Server Metadata
   - Source: https://www.rfc-editor.org/rfc/rfc8414.txt
 - `rfc8628.txt` - OAuth 2.0 Device Authorization Grant

@@ -9,7 +9,7 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from datetime import timezone as datetime_timezone
-from urllib.parse import unquote_plus
+from urllib.parse import unquote_plus, urlparse
 
 import requests
 from django.conf import settings
@@ -28,7 +28,7 @@ from jwcrypto.jwt import JWTExpired
 from oauthlib.oauth2.rfc6749 import errors, utils
 from oauthlib.openid import RequestValidator
 
-from .exceptions import FatalClientError
+from .exceptions import FatalClientError, InvalidResourceError
 from .models import (
     AbstractApplication,
     get_access_token_model,
@@ -362,6 +362,63 @@ class OAuth2Validator(RequestValidator):
         """
         return self._load_application(client_id, request) is not None
 
+    @staticmethod
+    def _extract_resource_parameters(request):
+        """
+        Extract the RFC 8707 `resource` parameters from an oauthlib request.
+
+        A `resource` request attribute holding a list (e.g. set from the
+        authorization credentials) takes precedence. Repeated `resource`
+        parameters are then read from the decoded request body (oauthlib
+        collapses duplicates in `request.resource`). Falls back to the scalar
+        `resource` request attribute, which may have been set while validating
+        a grant.
+        """
+        resources = []
+        attribute = getattr(request, "resource", None)
+        if isinstance(attribute, (list, tuple)):
+            resources.extend(resource for resource in attribute if resource)
+
+        if not resources:
+            decoded_body = getattr(request, "decoded_body", None) or []
+            if isinstance(decoded_body, dict):
+                decoded_body = decoded_body.items()
+            resources.extend(str(value) for key, value in decoded_body if key == "resource" and value)
+
+        if not resources and attribute:
+            resources.append(str(attribute))
+
+        # A single parameter may carry several space-separated indicators:
+        # resource URIs cannot contain spaces (see :rfc:`3986`), so splitting
+        # on whitespace is unambiguous.
+        return [indicator for resource in resources for indicator in resource.split()]
+
+    def validate_resource(self, client_id, resources, request=None, *args, **kwargs):
+        """
+        Ensure every RFC 8707 `resource` indicator requested by the client is
+        registered in the Application's `allowed_resources` list.
+
+        Each resource indicator must be an absolute URI without a fragment
+        component, as required by :rfc:`8707` Section 2.
+        """
+        if not resources:
+            return True
+
+        try:
+            application = Application.objects.get(client_id=client_id)
+        except Application.DoesNotExist:
+            return False
+
+        for resource in resources:
+            parsed = urlparse(resource)
+            if not parsed.scheme or not parsed.netloc or parsed.fragment:
+                log.debug("Invalid resource indicator %r: not an absolute URI without fragment", resource)
+                return False
+            if not application.resource_allowed(resource):
+                log.debug("Resource indicator %r is not registered for Application %r", resource, client_id)
+                return False
+        return True
+
     def get_default_redirect_uri(self, client_id, request, *args, **kwargs):
         return request.client.default_redirect_uri
 
@@ -516,6 +573,16 @@ class OAuth2Validator(RequestValidator):
                     request.nonce = grant.nonce
                 if grant.claims:
                     request.claims = json.loads(grant.claims)
+                # RFC 8707: resource indicators requested at the token endpoint
+                # must be identical to, or a subset of, the ones granted during
+                # the authorization request. When omitted, the granted ones apply.
+                grant_resources = grant.resource.split()
+                requested_resources = self._extract_resource_parameters(request)
+                if requested_resources:
+                    if grant_resources and not set(requested_resources).issubset(set(grant_resources)):
+                        raise InvalidResourceError(request=request)
+                elif grant_resources:
+                    request.resource = " ".join(grant_resources)
                 return True
             return False
 
@@ -556,7 +623,7 @@ class OAuth2Validator(RequestValidator):
         Ensure required scopes are permitted (as specified in the settings file)
         """
         available_scopes = get_scopes_backend().get_available_scopes(application=client, request=request)
-        return set(scopes).issubset(set(available_scopes))
+        return get_scopes_backend().check_scopes(scopes, available_scopes)
 
     def get_default_scopes(self, client_id, request, *args, **kwargs):
         default_scopes = get_scopes_backend().get_default_scopes(application=request.client, request=request)
@@ -725,6 +792,7 @@ class OAuth2Validator(RequestValidator):
             token=token["access_token"],
             id_token=id_token,
             application=request.client,
+            resource=" ".join(self._extract_resource_parameters(request)),
             source_refresh_token=source_refresh_token,
         )
 
@@ -742,6 +810,7 @@ class OAuth2Validator(RequestValidator):
             code_challenge_method=request.code_challenge_method or "",
             nonce=request.nonce or "",
             claims=json.dumps(request.claims or {}),
+            resource=" ".join(self._extract_resource_parameters(request)),
         )
 
     def _create_refresh_token(self, request, refresh_token_code, access_token, previous_refresh_token):
@@ -834,6 +903,16 @@ class OAuth2Validator(RequestValidator):
         request.refresh_token = rt.token
         # Temporary store RefreshToken instance to be reused by get_original_scopes and save_bearer_token.
         request.refresh_token_instance = rt
+
+        # RFC 8707: when the refresh request does not carry `resource` parameters,
+        # the new access token inherits the ones of the original access token.
+        original_access_token = getattr(rt, "access_token", None)
+        if (
+            original_access_token is not None
+            and original_access_token.resource
+            and not self._extract_resource_parameters(request)
+        ):
+            request.resource = original_access_token.resource
 
         return rt.application == client
 

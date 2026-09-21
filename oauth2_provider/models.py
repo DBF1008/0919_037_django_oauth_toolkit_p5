@@ -79,6 +79,10 @@ class AbstractApplication(models.Model):
     * :attr:`client_secret` Confidential secret issued to the client during
                             the registration process as described in :rfc:`2.2`
     * :attr:`name` Friendly name for the Application
+    * :attr:`allowed_resources` The list of resource server URIs, as defined in
+                                :rfc:`8707`, the Application is allowed to
+                                request access to. The string consists of valid
+                                absolute URIs separated by space
     """
 
     CLIENT_CONFIDENTIAL = "confidential"
@@ -152,6 +156,11 @@ class AbstractApplication(models.Model):
         help_text=_("Allowed origins list to enable CORS, space separated"),
         default="",
     )
+    allowed_resources = models.TextField(
+        blank=True,
+        help_text=_("Allowed resource server URIs list (RFC 8707), space separated"),
+        default="",
+    )
 
     class Meta:
         abstract = True
@@ -200,6 +209,14 @@ class AbstractApplication(models.Model):
         """
         return self.allowed_origins and is_origin_allowed(origin, self.allowed_origins.split())
 
+    def resource_allowed(self, resource):
+        """
+        Checks if given resource URI is one of the items in :attr:`allowed_resources` string
+
+        :param resource: Resource indicator URI to check, as in :rfc:`8707`
+        """
+        return bool(resource) and resource in self.allowed_resources.split()
+
     def clean(self):
         from django.core.exceptions import ValidationError
 
@@ -242,6 +259,18 @@ class AbstractApplication(models.Model):
                 allow_hostname_wildcard=oauth2_settings.ALLOW_URI_WILDCARDS,
             )
             for uri in allowed_origins:
+                validator(uri)
+
+        allowed_resources = self.allowed_resources.strip().split()
+        if allowed_resources:
+            # RFC 8707 resource indicators must be absolute URIs without fragment
+            validator = AllowedURIValidator(
+                oauth2_settings.ALLOWED_SCHEMES,
+                "allowed resource",
+                allow_path=True,
+                allow_query=True,
+            )
+            for uri in allowed_resources:
                 validator(uri)
 
         if self.algorithm == AbstractApplication.RS256_ALGORITHM:
@@ -320,6 +349,8 @@ class AbstractGrant(models.Model):
     * :attr:`scope` Required scopes, optional
     * :attr:`code_challenge` PKCE code challenge
     * :attr:`code_challenge_method` PKCE code challenge transform algorithm
+    * :attr:`resource` RFC 8707 resource indicators requested when the
+                       authorization code was issued, space separated
     """
 
     CODE_CHALLENGE_PLAIN = "plain"
@@ -346,6 +377,7 @@ class AbstractGrant(models.Model):
 
     nonce = models.CharField(max_length=255, blank=True, default="")
     claims = models.TextField(blank=True)
+    resource = models.TextField(blank=True, default="")
 
     def is_expired(self):
         """
@@ -384,6 +416,8 @@ class AbstractAccessToken(models.Model):
     * :attr:`application` Application instance
     * :attr:`expires` Date and time of token expiration, in DateTime format
     * :attr:`scope` Allowed scopes
+    * :attr:`resource` RFC 8707 resource indicators this token is intended for,
+                       space separated
     """
 
     id = models.BigAutoField(primary_key=True)
@@ -424,6 +458,7 @@ class AbstractAccessToken(models.Model):
     )
     expires = models.DateTimeField()
     scope = models.TextField(blank=True)
+    resource = models.TextField(blank=True, default="")
 
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
@@ -454,10 +489,7 @@ class AbstractAccessToken(models.Model):
         if not scopes:
             return True
 
-        provided_scopes = set(self.scope.split())
-        resource_scopes = set(scopes)
-
-        return resource_scopes.issubset(provided_scopes)
+        return get_scopes_backend().check_scopes(list(scopes), self.scope.split())
 
     def revoke(self):
         """

@@ -26,6 +26,7 @@ logo, acceptance of some user agreement and so on.
     * :attr:`authorization_grant_type` Authorization flows available to the Application
     * :attr:`client_secret` Confidential secret issued to the client during the registration process as described in :rfc:`2.2`
     * :attr:`name` Friendly name for the Application
+    * :attr:`allowed_resources` The list of resource server URIs, as defined in :rfc:`8707`, the Application is allowed to request access to. The string consists of valid absolute URIs separated by space
 
 Django OAuth Toolkit lets you extend the AbstractApplication model in a fashion like Django's
 custom user models.
@@ -156,3 +157,63 @@ same namespace as before.
     ]
 
 This method also allows to remove some of the urls (such as managements) urls if you don't want them.
+
+.. _hierarchical-scopes:
+
+Hierarchical scopes
+===================
+
+The default scopes backend (``oauth2_provider.scopes.SettingsScopes``) supports hierarchical
+scope definitions using ``:`` as the separator, for example:
+
+.. code-block:: python
+
+    OAUTH2_PROVIDER = {
+        "SCOPES": {
+            "read:photos": "Read the user's photos",
+            "write:photos": "Upload and modify the user's photos",
+        },
+    }
+
+When scopes are matched (both when validating requested scopes and when checking the scopes of
+an access token protecting a resource), the following rules apply:
+
+* *Prefix matching*: a scope covers all of its descendants, so a token granted ``read:photos``
+  also satisfies a requirement for ``read:photos:albums``.
+* *Write implies read*: a *write* scope implies the corresponding *read* scope on the same
+  subtree, so a token granted ``write:photos`` also satisfies ``read:photos`` (and
+  ``read:photos:albums``). The read/write action names are taken from the ``READ_SCOPE`` and
+  ``WRITE_SCOPE`` settings.
+
+Scopes defined without the ``:`` separator keep the classic exact-match semantics, so existing
+configurations are unaffected.
+
+.. _resource-indicators:
+
+Resource Indicators (RFC 8707)
+==============================
+
+Django OAuth Toolkit supports `RFC 8707 - Resource Indicators for OAuth 2.0 <https://www.rfc-editor.org/rfc/rfc8707.html>`_:
+clients can signal which resource server (API) they want to use the issued token for, by sending
+one or more ``resource`` parameters to the authorization and token endpoints.
+
+To enable it, register the URIs of the resource servers an application may access in the
+``allowed_resources`` field of the ``Application`` model (a space separated list of absolute URIs,
+without fragment components):
+
+.. code-block:: python
+
+    application.allowed_resources = "https://api.example.com https://photos.example.com"
+    application.save()
+
+When a client includes ``resource`` parameters in a request, each of them is validated against
+``allowed_resources``; requests carrying unknown, malformed or unregistered resource indicators
+are rejected with the ``invalid_target`` error code defined by the RFC.
+
+During the authorization code flow, the requested resource indicators are persisted on the
+authorization code grant: if the subsequent token request does not repeat them, the access token
+inherits the ones from the authorization request; if it does, they must be a subset of the
+originally granted ones. The resource indicators are stored on the issued access token
+(``AccessToken.resource``, space separated) so resource servers can verify the token audience.
+Access tokens obtained from a refresh token inherit the resource indicators of the original
+access token, unless the refresh request explicitly carries new ``resource`` parameters.

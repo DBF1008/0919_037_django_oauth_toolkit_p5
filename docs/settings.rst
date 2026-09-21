@@ -239,6 +239,10 @@ SCOPES
 
 A dictionary mapping each scope name to its human description.
 
+Scope names may be hierarchical, using ``:`` as separator (e.g. ``read:photos``,
+``write:photos``). The default scopes backend matches them with prefix semantics and
+lets a *write* scope imply the corresponding *read* scope; see :ref:`hierarchical-scopes`.
+
 .. _settings_default_scopes:
 
 DEFAULT_SCOPES

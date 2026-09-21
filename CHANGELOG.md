@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [unreleased]
 
+### Added
+* Add support for RFC 8707 (Resource Indicators for OAuth 2.0): new `allowed_resources` field on
+  `AbstractApplication`, validation of `resource` parameters on the authorization and token
+  endpoints with `invalid_target` errors, persistence of resource indicators on `Grant` and
+  `AccessToken`, and inheritance across the authorization code and refresh token flows.
+* Add hierarchical scope matching to `SettingsScopes`: scopes defined with `:` separators
+  (e.g. `read:photos`, `write:photos`) support prefix matching, and a write scope implies the
+  corresponding read scope (`write:photos` grants `read:photos`).
+
 ### Deprecated
 * Deprecate the `AUTHENTICATION_SERVER_EXP_TIME_ZONE` setting. Token introspection `exp` values are
   Unix timestamps and are always interpreted as UTC per RFC 7662/RFC 7519. The setting still works

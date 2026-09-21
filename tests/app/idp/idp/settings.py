@@ -218,6 +218,8 @@ OAUTH2_PROVIDER = {
     "OIDC_RSA_PRIVATE_KEY": env("OAUTH2_PROVIDER_OIDC_RSA_PRIVATE_KEY"),
     "SCOPES": {
         "openid": "OpenID Connect scope",
+        "read:photos": "Read the user's photos",
+        "write:photos": "Upload and modify the user's photos (implies read:photos)",
     },
     "ALLOWED_SCHEMES": env("OAUTH2_PROVIDER_ALLOWED_SCHEMES"),
 }
