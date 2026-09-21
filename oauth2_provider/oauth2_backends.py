@@ -1,5 +1,5 @@
 import json
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 
 from django.http import HttpRequest
 from oauthlib import oauth2
@@ -8,6 +8,7 @@ from oauthlib.common import quote, urlencode, urlencoded
 from oauthlib.oauth2 import OAuth2Error
 
 from .exceptions import FatalClientError, OAuthToolkitError
+from .resource_indicators import parse_resources, validate_resource_indicator
 from .settings import oauth2_settings
 
 
@@ -110,13 +111,19 @@ class OAuthLibCore:
                 uri, http_method=http_method, body=body, headers=headers
             )
 
+            # RFC 8707: capture the (possibly repeated) resource parameters so
+            # they survive the consent form round-trip and can be validated /
+            # persisted later.
+            resources = parse_resources(request.GET)
+            credentials["resources"] = resources
+
             return scopes, credentials
         except oauth2.FatalClientError as error:
             raise FatalClientError(error=error)
         except oauth2.OAuth2Error as error:
             raise OAuthToolkitError(error=error)
 
-    def create_authorization_response(self, request, scopes, credentials, allow):
+    def create_authorization_response(self, request, scopes, credentials, allow, resources=None):
         """
         A wrapper method that calls create_authorization_response on `server_class`
         instance.
@@ -125,6 +132,7 @@ class OAuthLibCore:
         :param scopes: A list of provided scopes
         :param credentials: Authorization credentials dictionary containing
                            `client_id`, `state`, `redirect_uri`, `response_type`
+        :param resources: RFC 8707 resource indicator URIs requested by the client
         :param allow: True if the user authorize the client, otherwise False
         """
         try:
@@ -134,6 +142,15 @@ class OAuthLibCore:
             # add current user to credentials. this will be used by OAUTH2_VALIDATOR_CLASS
             credentials["user"] = request.user
             request_uri, http_method, _, request_headers = self._extract_params(request)
+
+            if resources is None:
+                resources = parse_resources(request.POST)
+            try:
+                for resource in resources:
+                    validate_resource_indicator(resource)
+            except OAuth2Error as error:
+                raise OAuthToolkitError(error=error, redirect_uri=credentials["redirect_uri"])
+            credentials["resources"] = resources
 
             headers, body, status = self.server.create_authorization_response(
                 uri=request_uri,
@@ -170,7 +187,19 @@ class OAuthLibCore:
         uri, http_method, body, headers = self._extract_params(request)
         extra_credentials = self._get_extra_credentials(request)
 
+        # RFC 8707: retain the (possibly repeated) resource parameters. The
+        # urlencoded body collapses duplicate keys, so rebuild it from the
+        # original Django request. Validation against the application's
+        # allowed resources happens in the validator.
+        resources = parse_resources(request.POST)
+
         try:
+            for resource in resources:
+                validate_resource_indicator(resource)
+            if resources:
+                body_params = [(k, v) for k, v in parse_qsl(body) if k != "resource"]
+                body_params.extend(("resource", resource) for resource in resources)
+                body = urlencode(body_params)
             headers, body, status = self.server.create_token_response(
                 uri, http_method, body, headers, extra_credentials
             )

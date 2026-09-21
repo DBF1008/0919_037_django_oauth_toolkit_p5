@@ -27,6 +27,27 @@ class ApplicationAdmin(admin.ModelAdmin):
     }
     search_fields = ("name",) + (("user__email",) if has_email else ())
     raw_id_fields = ("user",)
+    fieldsets = (
+        (
+            "",
+            {
+                "fields": (
+                    "name",
+                    "client_id",
+                    "client_secret",
+                    "client_type",
+                    "authorization_grant_type",
+                    "user",
+                    "redirect_uris",
+                    "post_logout_redirect_uris",
+                    "allowed_origins",
+                    "allowed_resources",
+                    "algorithm",
+                    "skip_authorization",
+                )
+            },
+        ),
+    )
 
 
 class AccessTokenAdmin(admin.ModelAdmin):

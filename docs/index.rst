@@ -44,6 +44,7 @@ Index
    signals
    settings
    resource_server
+   resource_indicators
    management_commands
    glossary
 

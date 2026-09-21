@@ -5,6 +5,7 @@ from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
 from django.http import HttpRequest, HttpResponseForbidden, HttpResponseNotFound
 
 from ..exceptions import FatalClientError
+from ..resource_indicators import parse_resources
 from ..scopes import get_scopes_backend
 from ..settings import oauth2_settings
 
@@ -97,7 +98,7 @@ class OAuthLibMixin:
         core = self.get_oauthlib_core()
         return core.validate_authorization_request(request)
 
-    def create_authorization_response(self, request, scopes, credentials, allow):
+    def create_authorization_response(self, request, scopes, credentials, allow, resources=None):
         """
         A wrapper method that calls create_authorization_response on `server_class`
         instance.
@@ -106,13 +107,17 @@ class OAuthLibMixin:
         :param scopes: A space-separated string of provided scopes
         :param credentials: Authorization credentials dictionary containing
                            `client_id`, `state`, `redirect_uri` and `response_type`
+        :param resources: RFC 8707 resource indicator URIs requested by the client
         :param allow: True if the user authorize the client, otherwise False
         """
         # TODO: move this scopes conversion from and to string into a utils function
         scopes = scopes.split(" ") if scopes else []
 
+        if resources is None:
+            resources = parse_resources(request.POST)
+
         core = self.get_oauthlib_core()
-        return core.create_authorization_response(request, scopes, credentials, allow)
+        return core.create_authorization_response(request, scopes, credentials, allow, resources)
 
     def create_device_authorization_response(self, request: HttpRequest):
         """

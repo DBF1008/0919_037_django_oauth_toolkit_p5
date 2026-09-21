@@ -20,6 +20,7 @@ from ..exceptions import OAuthToolkitError
 from ..forms import AllowForm
 from ..http import OAuth2ResponseRedirect
 from ..models import get_access_token_model, get_application_model, get_device_grant_model
+from ..resource_indicators import parse_resources, resources_from_str, resources_to_str
 from ..scopes import get_scopes_backend
 from ..settings import oauth2_settings
 from ..signals import app_authorized
@@ -111,6 +112,7 @@ class AuthorizationView(BaseAuthorizationView, FormView):
             "code_challenge": self.oauth2_data.get("code_challenge", None),
             "code_challenge_method": self.oauth2_data.get("code_challenge_method", None),
             "claims": self.oauth2_data.get("claims", None),
+            "resource": resources_to_str(self.oauth2_data.get("resources", [])),
         }
         return initial_data
 
@@ -131,13 +133,22 @@ class AuthorizationView(BaseAuthorizationView, FormView):
             credentials["nonce"] = form.cleaned_data.get("nonce")
         if form.cleaned_data.get("claims", False):
             credentials["claims"] = form.cleaned_data.get("claims")
+        # Parse from the raw POST so that multiple "resource" parameters
+        # (hidden field space-separated or repeated) are all preserved.
+        resources = parse_resources(self.request.POST)
+        if not resources:
+            resources = resources_from_str(form.cleaned_data.get("resource", ""))
 
         scopes = form.cleaned_data.get("scope")
         allow = form.cleaned_data.get("allow")
 
         try:
             uri, headers, body, status = self.create_authorization_response(
-                request=self.request, scopes=scopes, credentials=credentials, allow=allow
+                request=self.request,
+                scopes=scopes,
+                credentials=credentials,
+                allow=allow,
+                resources=resources,
             )
         except OAuthToolkitError as error:
             return self.error_response(error, application)
@@ -178,6 +189,7 @@ class AuthorizationView(BaseAuthorizationView, FormView):
             kwargs["nonce"] = credentials["nonce"]
         if "claims" in credentials:
             kwargs["claims"] = json.dumps(credentials["claims"])
+        kwargs["resources"] = credentials.get("resources", [])
 
         self.oauth2_data = kwargs
         # following two loc are here only because of https://code.djangoproject.com/ticket/17795
@@ -199,7 +211,11 @@ class AuthorizationView(BaseAuthorizationView, FormView):
             # are already approved.
             if application.skip_authorization:
                 uri, headers, body, status = self.create_authorization_response(
-                    request=self.request, scopes=" ".join(scopes), credentials=credentials, allow=True
+                    request=self.request,
+                    scopes=" ".join(scopes),
+                    credentials=credentials,
+                    allow=True,
+                    resources=credentials.get("resources", []),
                 )
                 return self.redirect(uri, application)
 
@@ -220,6 +236,7 @@ class AuthorizationView(BaseAuthorizationView, FormView):
                             scopes=" ".join(scopes),
                             credentials=credentials,
                             allow=True,
+                            resources=credentials.get("resources", []),
                         )
                         return self.redirect(uri, application)
 

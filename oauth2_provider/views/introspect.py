@@ -47,6 +47,9 @@ class IntrospectTokenView(ClientProtectedScopedResourceView):
                     "scope": token.scope,
                     "exp": int(calendar.timegm(token.expires.timetuple())),
                 }
+                # RFC 8707: expose the audience the token is bound to.
+                if token.resources:
+                    data["aud"] = token.audience
                 if token.application:
                     data["client_id"] = token.application.client_id
                 if token.user:

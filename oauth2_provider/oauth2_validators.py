@@ -37,6 +37,12 @@ from .models import (
     get_id_token_model,
     get_refresh_token_model,
 )
+from .resource_indicators import (
+    InvalidTargetError,
+    resources_from_str,
+    resources_to_str,
+    validate_resource_indicator,
+)
 from .scopes import get_scopes_backend
 from .settings import oauth2_settings
 from .utils import get_timezone
@@ -516,6 +522,9 @@ class OAuth2Validator(RequestValidator):
                     request.nonce = grant.nonce
                 if grant.claims:
                     request.claims = json.loads(grant.claims)
+                # RFC 8707: validate the resource parameters presented at the
+                # token endpoint against those bound to the authorization code.
+                self.validate_resource_indicators(client, request, grant=grant)
                 return True
             return False
 
@@ -556,7 +565,74 @@ class OAuth2Validator(RequestValidator):
         Ensure required scopes are permitted (as specified in the settings file)
         """
         available_scopes = get_scopes_backend().get_available_scopes(application=client, request=request)
-        return set(scopes).issubset(set(available_scopes))
+        if not set(scopes).issubset(set(available_scopes)):
+            return False
+
+        # RFC 8707: every resource indicator requested at the token endpoint
+        # MUST be registered for the client.
+        self.validate_resource_indicators(client, request)
+        return True
+
+    def _extract_resources(self, request):
+        """
+        Extract the (possibly repeated) RFC 8707 ``resource`` parameters from
+        an oauthlib request, preserving order and de-duplicating values.
+        """
+        resources = []
+        for key, value in list(getattr(request, "decoded_body", []) or []):
+            if key == "resource" and value and value not in resources:
+                resources.append(value)
+        return resources
+
+    def validate_resource_indicators(self, client, request, grant=None):
+        """
+        Validate the RFC 8707 resource indicators carried by a request.
+
+        * each indicator MUST be a valid absolute URI without a fragment;
+        * every indicator MUST have been registered in the application's
+          ``allowed_resources``;
+        * for authorization-code grants, the indicators presented at the token
+          endpoint MUST be among those bound to the authorization code.
+
+        The validated resource list is attached to ``request.resources`` so it
+        can be bound to the tokens issued for the request.
+        """
+        resources = getattr(request, "resources", None)
+        if resources is None:
+            resources = self._extract_resources(request)
+
+        for resource in resources:
+            validate_resource_indicator(resource)
+            if client is not None and not client.resource_allowed(resource):
+                raise InvalidTargetError(
+                    request=request,
+                    description=f"The resource indicator {resource!r} is not allowed for this client.",
+                )
+
+        if grant is not None:
+            grant_resources = resources_from_str(grant.resources)
+            if grant_resources and not resources:
+                raise InvalidTargetError(
+                    request=request,
+                    description=(
+                        "A resource parameter is required when the authorization request contained one."
+                    ),
+                )
+            for resource in resources:
+                if resource not in grant_resources:
+                    raise InvalidTargetError(
+                        request=request,
+                        description=(
+                            f"The resource indicator {resource!r} was not included "
+                            "in the authorization request."
+                        ),
+                    )
+            # RFC 8707 4: the token is bound to the intersection presented at
+            # both endpoints.
+            resources = [resource for resource in grant_resources if resource in resources]
+
+        request.resources = resources
+        return resources
 
     def get_default_scopes(self, client_id, request, *args, **kwargs):
         default_scopes = get_scopes_backend().get_default_scopes(application=request.client, request=request)
@@ -661,6 +737,7 @@ class OAuth2Validator(RequestValidator):
                 access_token.expires = expires
                 access_token.token = token["access_token"]
                 access_token.application = request.client
+                access_token.resources = resources_to_str(getattr(request, "resources", None) or [])
                 access_token.save()
 
             # else create fresh with access & refresh tokens
@@ -718,6 +795,7 @@ class OAuth2Validator(RequestValidator):
         id_token = token.get("id_token", None)
         if id_token:
             id_token = self._load_id_token(id_token)
+        resources = getattr(request, "resources", None) or []
         return AccessToken.objects.create(
             user=request.user,
             scope=token["scope"],
@@ -726,11 +804,13 @@ class OAuth2Validator(RequestValidator):
             id_token=id_token,
             application=request.client,
             source_refresh_token=source_refresh_token,
+            resources=resources_to_str(resources),
         )
 
     def _create_authorization_code(self, request, code, expires=None):
         if not expires:
             expires = timezone.now() + timedelta(seconds=oauth2_settings.AUTHORIZATION_CODE_EXPIRE_SECONDS)
+        resources = getattr(request, "resources", None) or []
         return Grant.objects.create(
             application=request.client,
             user=request.user,
@@ -742,6 +822,7 @@ class OAuth2Validator(RequestValidator):
             code_challenge_method=request.code_challenge_method or "",
             nonce=request.nonce or "",
             claims=json.dumps(request.claims or {}),
+            resources=resources_to_str(resources),
         )
 
     def _create_refresh_token(self, request, refresh_token_code, access_token, previous_refresh_token):
@@ -834,6 +915,21 @@ class OAuth2Validator(RequestValidator):
         request.refresh_token = rt.token
         # Temporary store RefreshToken instance to be reused by get_original_scopes and save_bearer_token.
         request.refresh_token_instance = rt
+
+        # RFC 8707: resource parameters at the refresh endpoint MUST be
+        # registered for the client and a subset of those bound to the refresh
+        # token. The refreshed access token keeps the original audience unless
+        # a subset was explicitly requested.
+        resources = self._extract_resources(request)
+        self.validate_resource_indicators(client, request)
+        original_resources = resources_from_str(rt.access_token.resources) if rt.access_token_id else []
+        for resource in resources:
+            if resource not in original_resources:
+                raise InvalidTargetError(
+                    request=request,
+                    description=(f"The resource indicator {resource!r} was not bound to the refresh token."),
+                )
+        request.resources = resources or original_resources
 
         return rt.application == client
 

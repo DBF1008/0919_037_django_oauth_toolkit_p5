@@ -152,6 +152,11 @@ class AbstractApplication(models.Model):
         help_text=_("Allowed origins list to enable CORS, space separated"),
         default="",
     )
+    allowed_resources = models.TextField(
+        blank=True,
+        default="",
+        help_text=_("Allowed resource indicators (RFC 8707), space separated"),
+    )
 
     class Meta:
         abstract = True
@@ -200,6 +205,15 @@ class AbstractApplication(models.Model):
         """
         return self.allowed_origins and is_origin_allowed(origin, self.allowed_origins.split())
 
+    def resource_allowed(self, resource):
+        """
+        Check if the given resource indicator is one of the items registered
+        in the :attr:`allowed_resources` string.
+
+        :param resource: Resource indicator URI to check
+        """
+        return resource in self.allowed_resources.split()
+
     def clean(self):
         from django.core.exceptions import ValidationError
 
@@ -243,6 +257,20 @@ class AbstractApplication(models.Model):
             )
             for uri in allowed_origins:
                 validator(uri)
+
+        allowed_resources = self.allowed_resources.strip().split()
+        if allowed_resources:
+            from urllib.parse import urlparse
+
+            for resource in allowed_resources:
+                parsed = urlparse(resource)
+                if not parsed.scheme or not parsed.netloc or parsed.fragment:
+                    raise ValidationError(
+                        _(
+                            "Invalid resource indicator {resource}: it must be "
+                            "an absolute URI without a fragment"
+                        ).format(resource=resource)
+                    )
 
         if self.algorithm == AbstractApplication.RS256_ALGORITHM:
             if not oauth2_settings.OIDC_RSA_PRIVATE_KEY:
@@ -346,6 +374,8 @@ class AbstractGrant(models.Model):
 
     nonce = models.CharField(max_length=255, blank=True, default="")
     claims = models.TextField(blank=True)
+    # RFC 8707 resource indicators bound to the authorization code
+    resources = models.TextField(blank=True, default="")
 
     def is_expired(self):
         """
@@ -424,6 +454,8 @@ class AbstractAccessToken(models.Model):
     )
     expires = models.DateTimeField()
     scope = models.TextField(blank=True)
+    # RFC 8707 resource indicators (audience) bound to the access token
+    resources = models.TextField(blank=True, default="")
 
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
@@ -454,10 +486,7 @@ class AbstractAccessToken(models.Model):
         if not scopes:
             return True
 
-        provided_scopes = set(self.scope.split())
-        resource_scopes = set(scopes)
-
-        return resource_scopes.issubset(provided_scopes)
+        return get_scopes_backend().allow_scopes(self.scope.split(), scopes)
 
     def revoke(self):
         """
@@ -474,6 +503,13 @@ class AbstractAccessToken(models.Model):
         all_scopes = get_scopes_backend().get_all_scopes()
         token_scopes = self.scope.split()
         return {name: desc for name, desc in all_scopes.items() if name in token_scopes}
+
+    @property
+    def audience(self):
+        """
+        Return the list of RFC 8707 resource indicators the token is bound to.
+        """
+        return self.resources.split() if self.resources else []
 
     def __str__(self):
         return self.token

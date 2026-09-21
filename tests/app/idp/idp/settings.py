@@ -218,7 +218,12 @@ OAUTH2_PROVIDER = {
     "OIDC_RSA_PRIVATE_KEY": env("OAUTH2_PROVIDER_OIDC_RSA_PRIVATE_KEY"),
     "SCOPES": {
         "openid": "OpenID Connect scope",
+        # Hierarchical scopes: granting "write:photos" also grants
+        # "read:photos" (see SCOPE_ACTION_IMPLICATIONS below).
+        "read:photos": "Read photos",
+        "write:photos": "Create or update photos",
     },
+    "SCOPE_ACTION_IMPLICATIONS": {"write": "read"},
     "ALLOWED_SCHEMES": env("OAUTH2_PROVIDER_ALLOWED_SCHEMES"),
 }
 # needs to be set to allow cors requests from the test app, along with ALLOWED_SCHEMES=["http"]

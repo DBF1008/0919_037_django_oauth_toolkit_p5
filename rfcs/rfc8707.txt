@@ -1,0 +1,240 @@
+
+Internet Engineering Task Force (IETF)                    B. Campbell, Ed.
+Request for Comments: 8707                                        Ping Identity
+Category: Standards Track                                        J. Bradley
+ISSN: 2070-1721                                              Yubico/Ping Identity
+                                                            H. Tschofenig
+                                                                 Arm Limited
+                                                           February 2020
+
+
+       Resource Indicators for OAuth 2.0
+
+Abstract
+
+   This document specifies an extension to the OAuth 2.0 Authorization
+   Framework defining request parameters that allow a client to indicate
+   the target service or resource to which access is being requested.
+   An authorization server's response also provides this information.
+
+   An access token is typically scoped for use at a particular resource
+   server.  The resource indicators allow the client to identify the
+   target service of the access token and also provide a way for the
+   resource server to identify the intended audience for the token.
+
+Status of This Memo
+
+   This is an Internet Standards Track document.
+
+Copyright Notice
+
+   Copyright (c) 2020 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+Table of Contents
+
+   1.  Introduction
+   2.  Resource Indicators
+     2.1.  The "resource" Request Parameter
+     2.2.  The "invalid_target" Error Code
+     2.3.  Authorization Request
+     2.4.  Token Request
+     2.5.  Authorization Server Processing
+     2.6.  Access Token Response
+   3.  Interaction with Token Introspection
+   4.  Relationship to the "aud" Claim
+   5.  Resource Server Processing
+   6.  Security Considerations
+   7.  IANA Considerations
+     7.1.  OAuth Parameters Registration
+     7.2.  OAuth URI Registration
+     7.3.  OAuth Extensions Error Registration
+   8.  References
+   Appendix A.  Acknowledgements
+   Appendix B.  Document Notes
+
+1.  Introduction
+
+   OAuth 2.0 [RFC6749] does not have a standard mechanism for a client to
+   indicate the target resource or service (hereinafter "resource") for
+   which an access token is requested.  This document specifies
+   parameters that enable such an indication.
+
+   Resource indicators enable a client to request a token for a specific
+   resource and allow the authorization server to bind the issued token
+   to that resource.  The audience of an access token is represented by
+   the "aud" claim, as defined for JSON Web Token (JWT) [RFC7519].
+
+2.  Resource Indicators
+
+2.1.  The "resource" Request Parameter
+
+   A resource indicator is an absolute URI that identifies the resource.
+   The value MUST be an absolute URI and MUST NOT include a fragment
+   component.  The URI SHOULD NOT contain a query component unless the
+   resource owner's client requires it.  The URI is used as a logical
+   identifier for the resource and is not necessarily a network
+   locatable address; however, it MUST use the "https" URI scheme unless
+   a different scheme is necessary for the application.  The resource
+   indicator's URI serves as a name for the target resource.
+
+   The "resource" parameter MAY be included in requests to the
+   authorization endpoint (Section 2.3) and to the token endpoint
+   (Section 2.4).  It MAY also be used in access token introspection
+   responses (Section 3).
+
+   Multiple instances of the "resource" parameter MAY be sent to the
+   authorization server.  Each instance represents a different resource
+   for which access is being requested.
+
+2.2.  The "invalid_target" Error Code
+
+   This document defines the "invalid_target" error code, which indicates
+   that the requested resource indicator is invalid, unknown, or
+   malformed.
+
+   The authorization server responds with the HTTP 400 (Bad Request)
+   status code when this error is encountered at the token endpoint.  At
+   the authorization endpoint, the error is returned to the client per
+   the error response mechanisms of Section 4.1.2 of [RFC6749].
+
+2.3.  Authorization Request
+
+   The client MAY use the "resource" parameter to indicate the target
+   resource(s) when directing the resource owner to the authorization
+   endpoint.
+
+   The following example shows an authorization request containing a
+   resource indicator:
+
+   GET /as/authorization.oauth2?response_type=code
+      &client_id=example-client
+      &redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb
+      &scope=openid
+      &state=XZ4icq
+      &resource=https%3A%2F%2Frs.example.com%2Fapi HTTP/1.1
+
+   The authorization server SHOULD validate the resource indicator and
+   MAY require that the resource indicator be registered for the client.
+
+2.4.  Token Request
+
+   The client SHOULD include the "resource" parameter at the token
+   endpoint.  When the authorization request included one or more
+   resource indicators, the client MUST include at least one of them at
+   the token endpoint; the authorization server SHALL ignore any
+   resource indicators presented at the token endpoint that were not
+   also presented at the authorization endpoint.  The authorization
+   server MAY grant a subset of the requested resources.
+
+   The following example shows an access token request with a resource
+   indicator:
+
+   POST /token.oauth2 HTTP/1.1
+   Host: as.example.com
+   Authorization: Basic czZCaGRSa3F0Mzo3RmpmcDBaQnIxS3REUmJuZlZkbUl3
+
+   grant_type=authorization_code
+   &redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb
+   &code=10escu2e
+   &resource=https%3A%2F%2Frs.example.com%2Fapi
+
+2.5.  Authorization Server Processing
+
+   The authorization server validates the resource indicators presented
+   in authorization and token requests.  Indicators that are malformed,
+   unknown, or not allowed for the client result in an "invalid_target"
+   error.
+
+   The authorization server binds the accepted resource indicators to
+   the authorization code or access token it issues, so that they can be
+   carried across the authorization code exchange and into token
+   introspection.
+
+2.6.  Access Token Response
+
+   The access token response does not include the resource indicators as
+   a separate parameter; the audience information is encoded in the
+   access token itself (e.g. as an "aud" claim in a JWT) or otherwise
+   associated with the token by the authorization server.
+
+3.  Interaction with Token Introspection
+
+   An authorization server that supports token introspection [RFC7662]
+   SHOULD include the "aud" claim in its introspection response for
+   tokens that were issued with resource indicators.  The "aud" claim
+   value is either a single string or an array of strings, each an
+   absolute URI identifying a resource server for which the token is
+   valid:
+
+   {
+     "active": true,
+     "client_id": "example-client",
+     "username": "alice",
+     "scope": "read",
+     "aud": "https://rs.example.com/api",
+     "exp": 1563601090
+   }
+
+4.  Relationship to the "aud" Claim
+
+   The resource indicators accepted by the authorization server are used
+   as the value of the "aud" claim (Section 4.1.3 of [RFC7519]) when an
+   access token is a JWT.  The "aud" claim identifies the recipients
+   that the JWT is intended for.
+
+5.  Resource Server Processing
+
+   A resource server that receives an access token SHOULD verify that the
+   token's audience (e.g. the "aud" claim of a JWT, or the "aud" claim of
+   an introspection response) contains an identifier that identifies the
+   resource server.  A token presented to a resource server whose
+   identifier is not in the token's audience MUST be rejected.  Such
+   validation reduces the potential impact of token replay across
+   resource servers.
+
+6.  Security Considerations
+
+   The resource indicator constrains where an access token may be used
+   and limits the impact of token leakage.  Authorization servers SHOULD
+   ensure that resource indicators are bound to tokens in a way that
+   cannot be tampered with.  Resource indicators SHOULD use the "https"
+   scheme to prevent ambiguity and spoofing.  Clients MUST be prevented
+   from obtaining tokens for resource servers they have not been
+   registered to use.
+
+7.  IANA Considerations
+
+7.1.  OAuth Parameters Registration
+
+   IANA has registered the following value in the "OAuth Parameters"
+   registry:
+
+      Name: resource
+      Parameter Usage Location: authorization request, token request
+      Change Controller: IETF
+      Reference: RFC 8707
+
+7.2.  OAuth Extensions Error Registration
+
+   IANA has registered the following value in the "OAuth Extensions
+   Error" registry:
+
+      Error: invalid_target
+      Usage Location: authorization response, token response
+      Related Document: RFC 8707
+
+8.  References
+
+   [RFC6749]  Hardt, D., Ed., "The OAuth 2.0 Authorization Framework",
+              RFC 6749, DOI 10.17487/RFC6749, October 2012.
+   [RFC7519]  Jones, M., Bradley, J., and N. Sakimura, "JSON Web Token
+              (JWT)", RFC 7519, DOI 10.17487/RFC7519, May 2015.
+   [RFC7662]  Richer, J., Ed., "OAuth 2.0 Token Introspection",
+              RFC 7662, DOI 10.17487/RFC7662, October 2015.
+
+Appendix A.  Acknowledgements
+
+   The authors thank the OAuth working group participants, including
+   Aaron Parecki, Torsten Lodderstedt, and many others, for their review
+   and contributions.

@@ -253,6 +253,15 @@ By default this is set to ``'__all__'`` meaning that the whole set of ``SCOPES``
 
   DEFAULT_SCOPES = ['read', 'write']
 
+SCOPE_ACTION_IMPLICATIONS
+~~~~~~~~~~~~~~~~~~~~~~~~~
+A dictionary defining the action implications used for hierarchical scope
+matching. A granted ``"<action>:<resource>"`` scope automatically satisfies a
+required scope whose action is the mapped action on the same resource (or a
+more specific one). Defaults to ``{"write": "read"}`` so that e.g.
+``write:photos`` implies ``read:photos``. See :ref:`hierarchical_scopes` for
+details.
+
 READ_SCOPE
 ~~~~~~~~~~
 .. note:: (0.12.0+) Only used if ``SCOPES_BACKEND_CLASS`` is set to the SettingsScopes default.

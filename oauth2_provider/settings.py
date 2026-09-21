@@ -57,6 +57,11 @@ DEFAULTS = {
     "SCOPES": {"read": "Reading scope", "write": "Writing scope"},
     "DEFAULT_SCOPES": ["__all__"],
     "SCOPES_BACKEND_CLASS": "oauth2_provider.scopes.SettingsScopes",
+    # Hierarchical scope implications: granting the action on the left-hand
+    # side automatically grants the action on the right-hand side for the same
+    # (or a less specific) resource.
+    # e.g. {"write": "read"} means "write:photos" implies "read:photos".
+    "SCOPE_ACTION_IMPLICATIONS": {"write": "read"},
     "READ_SCOPE": "read",
     "WRITE_SCOPE": "write",
     "AUTHORIZATION_CODE_EXPIRE_SECONDS": 60,
